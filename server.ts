@@ -167,19 +167,21 @@ app.post('/api/examples/seed', (req, res) => {
 // Telegram Auth
 app.post('/api/auth/telegram', (req, res) => {
   const data = req.body;
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  
+  const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+
   if (!botToken) {
     return res.status(500).json({ error: 'Telegram bot token not configured' });
   }
 
   const { hash, ...userData } = data;
-  
+
   // Allow dev mock login
   if (hash === 'dev_mock_hash' && req.headers.origin?.includes('ais-dev')) {
     // Skip validation
   } else {
+    // Telegram: include only non-empty values, sort keys, build key=value per line
     const checkString = Object.keys(userData)
+      .filter(k => userData[k] != null && userData[k] !== '')
       .sort()
       .map(k => `${k}=${userData[k]}`)
       .join('\n');
@@ -187,26 +189,14 @@ app.post('/api/auth/telegram', (req, res) => {
     const secret = crypto.createHash('sha256').update(botToken).digest();
     const hmac = crypto.createHmac('sha256', secret).update(checkString).digest('hex');
 
-    // Debug logging for Telegram auth in production (temporary)
-    console.log('[TelegramAuth] Incoming data:', {
-      rawData: data,
-      userData,
-      hash,
-      computedHmac: hmac,
-      origin: req.headers.origin,
-    });
-
     if (hmac !== hash) {
-      // Temporarily allow auth if basic data looks valid, to debug Cloudflare/HTTPS issues
-      if (userData.id && userData.first_name) {
-        console.warn('[TelegramAuth] HMAC mismatch, but allowing auth for debug purposes', {
-          userId: userData.id,
-          firstName: userData.first_name,
-        });
-      } else {
-        console.warn('[TelegramAuth] HMAC mismatch and data invalid, rejecting auth');
-        return res.status(401).json({ error: 'Invalid Telegram authentication' });
-      }
+      return res.status(401).json({ error: 'Invalid Telegram authentication' });
+    }
+
+    // Reject if auth_date is too old (replay protection, Telegram recommends)
+    const authDate = Number(userData.auth_date);
+    if (!Number.isFinite(authDate) || Date.now() / 1000 - authDate > 86400) {
+      return res.status(401).json({ error: 'Telegram authentication expired' });
     }
   }
 
